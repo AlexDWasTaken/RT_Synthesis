@@ -9,7 +9,7 @@ import imageio
 from scipy.spatial import ConvexHull
 import numpy as np
 
-from sync_batchnorm import DataParallelWithCallback
+#from sync_batchnorm import DataParallelWithCallback
 
 def normalize_kp(kp_source, kp_driving, kp_driving_initial, adapt_movement_scale=False,
                  use_relative_movement=False, use_relative_jacobian=False):

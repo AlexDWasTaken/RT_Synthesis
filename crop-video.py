@@ -134,6 +134,10 @@ def process_video(args):
         raise (e)
 
     commands += compute_bbox_trajectories(trajectories, fps, frame_shape, args)
+    
+    if not commands:
+        print("Failed to generate suggestion.")
+    
     return commands
 
 

@@ -7,8 +7,9 @@ from sync_batchnorm import SynchronizedBatchNorm2d as BatchNorm2d
 from sync_batchnorm import SynchronizedBatchNorm3d as BatchNorm3d
 
 import torch.nn.utils.spectral_norm as spectral_norm
+import torch.nn.utils.prune as prune
 import re
-
+from timeit import default_timer
 
 def kp2gaussian(kp, spatial_size, kp_variance):
     """
@@ -101,6 +102,16 @@ class ResBottleneck(nn.Module):
         out += x
         out = F.relu(out)
         return out
+    
+    def prune(self, amount=0.2):
+        prune.l1_unstructured(self.conv1, name='weight', amount=amount)
+        prune.l1_unstructured(self.conv2, name='weight', amount=amount)
+        prune.l1_unstructured(self.conv3, name='weight', amount=amount)
+        prune.remove(self.conv1, name='weight')
+        prune.remove(self.conv2, name='weight')
+        prune.remove(self.conv3, name='weight')
+
+
 
 
 class ResBlock2d(nn.Module):
@@ -126,6 +137,14 @@ class ResBlock2d(nn.Module):
         out = self.conv2(out)
         out += x
         return out
+    
+    def prune(self, amount=0.2, log = False):
+        prune.l1_unstructured(self.conv1, name='weight', amount=amount)
+        prune.l1_unstructured(self.conv2, name='weight', amount=amount)
+        prune.remove(self.conv1, name='weight')
+        prune.remove(self.conv2, name='weight')
+        if log: print("114514")
+
 
 
 class ResBlock3d(nn.Module):
@@ -152,6 +171,13 @@ class ResBlock3d(nn.Module):
         out += x
         return out
 
+    def prune(self, amount=0.2, log=False):
+        prune.l1_unstructured(self.conv1, name='weight', amount=amount)
+        prune.l1_unstructured(self.conv2, name='weight', amount=amount)
+        prune.remove(self.conv1, name='weight')
+        prune.remove(self.conv2, name='weight')
+        if log: print(1919810)
+
 
 class UpBlock2d(nn.Module):
     """
@@ -171,6 +197,12 @@ class UpBlock2d(nn.Module):
         out = self.norm(out)
         out = F.relu(out)
         return out
+    
+    def prune(self, amount=0.2, log=False):
+        prune.l1_unstructured(self.conv, name='weight', amount=amount)
+        prune.remove(self.conv, name='weight')
+        if log: print(1919)
+
 
 class UpBlock3d(nn.Module):
     """
@@ -191,6 +223,12 @@ class UpBlock3d(nn.Module):
         out = self.norm(out)
         out = F.relu(out)
         return out
+    
+    def prune(self, amount=0.2, log=False):
+        prune.l1_unstructured(self.conv, name='weight', amount=amount)
+        prune.remove(self.conv, name='weight')
+        if log: print(810)
+
 
 
 class DownBlock2d(nn.Module):
@@ -211,6 +249,12 @@ class DownBlock2d(nn.Module):
         out = F.relu(out)
         out = self.pool(out)
         return out
+    
+    def prune(self, amount=0.2, log = False):
+        prune.l1_unstructured(self.conv, name='weight', amount=amount)
+        prune.remove(self.conv, name='weight')
+        if log: print(191)
+
 
 
 class DownBlock3d(nn.Module):
@@ -235,6 +279,12 @@ class DownBlock3d(nn.Module):
         out = F.relu(out)
         out = self.pool(out)
         return out
+    
+    def prune(self, amount=0.2, log=False):
+        prune.l1_unstructured(self.conv, name='weight', amount=amount)
+        prune.remove(self.conv, name='weight')
+        if log: print(112233445)
+
 
 
 class SameBlock2d(nn.Module):
@@ -257,6 +307,12 @@ class SameBlock2d(nn.Module):
         out = self.norm(out)
         out = self.ac(out)
         return out
+    
+    def prune(self, amount=0.2, log=False):
+        prune.l1_unstructured(self.conv, name='weight', amount=amount)
+        prune.remove(self.conv, name='weight')
+        if log: print(114)
+
 
 
 class Encoder(nn.Module):
@@ -464,11 +520,32 @@ class SPADEResnetBlock(nn.Module):
         self.norm_1 = SPADE(fmiddle, label_nc)
         if self.learned_shortcut:
             self.norm_s = SPADE(fin, label_nc)
+        self.pruned = False
 
     def forward(self, x, seg1):
+        torch.cuda.synchronize()
+        print("inside SPADEResnetBlock")
+        time0 = default_timer()
+        
         x_s = self.shortcut(x, seg1)
+        
+        torch.cuda.synchronize()
+        time1 = default_timer()
+        print('shortcut time: ', time1 - time0)
+        
         dx = self.conv_0(self.actvn(self.norm_0(x, seg1)))
+        
+        torch.cuda.synchronize()
+        time2 = default_timer()
+        print('conv_0 time: ', time2 - time1)
+        
         dx = self.conv_1(self.actvn(self.norm_1(dx, seg1)))
+        
+        torch.cuda.synchronize()
+        time3 = default_timer()
+        print('conv_1 time: ', time3 - time2)
+        
+        print("end SPADEResnetBlock")
         out = x_s + dx
         return out
 
@@ -481,3 +558,38 @@ class SPADEResnetBlock(nn.Module):
 
     def actvn(self, x):
         return F.leaky_relu(x, 2e-1)
+    
+
+def prune_conv_layer(conv_layer, threshold=1e-3):
+    """对卷积层进行剪枝，将权重值接近于零的参数剪掉
+
+    Args:
+        conv_layer (nn.Conv2d): 要剪枝的卷积层
+        threshold (float): 剪枝的阈值，小于该阈值的权重将被剪掉
+
+    Returns:
+        nn.Conv2d: 剪枝后的新卷积层
+    """
+    if not isinstance(conv_layer, nn.Conv2d):
+        raise ValueError("conv_layer must be an instance of nn.Conv2d")
+
+    # 复制原始卷积层的权重和偏置
+    new_conv_layer = nn.Conv2d(conv_layer.in_channels, conv_layer.out_channels,
+                               kernel_size=conv_layer.kernel_size, stride=conv_layer.stride,
+                               padding=conv_layer.padding, dilation=conv_layer.dilation,
+                               groups=conv_layer.groups, bias=conv_layer.bias is not None)
+
+    # 对权重进行剪枝
+    weight_mask = torch.abs(conv_layer.weight.data) > threshold
+    new_conv_layer.weight.data = conv_layer.weight.data * weight_mask
+
+    #print(sum(weight_mask))
+    print("conv pruned +1")
+    
+    # 如果有偏置，也进行相应的剪枝
+    if conv_layer.bias is not None:
+        bias_mask = torch.abs(conv_layer.bias.data) > threshold
+        new_conv_layer.bias.data = conv_layer.bias.data * bias_mask
+
+    return new_conv_layer
+        
